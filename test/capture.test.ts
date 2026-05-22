@@ -2,7 +2,8 @@ import test from "node:test"
 import assert from "node:assert/strict"
 import os from "node:os"
 import path from "node:path"
-import { mkdtemp, readFile, writeFile, mkdir } from "node:fs/promises"
+import { mkdtemp, readFile, writeFile, mkdir, realpath } from "node:fs/promises"
+import { pathToFileURL } from "node:url"
 
 import pluginDefinition from "../src/index.js"
 import { runInstall } from "../src/cli.js"
@@ -42,6 +43,40 @@ async function createHarness(options: {
       inlineOutputLimit: options.inlineOutputLimit,
     }),
   }
+}
+
+async function installFakePackage(projectDir: string) {
+  const packageDir = path.join(projectDir, "node_modules", "opencode-capture")
+  const entryPath = path.join(packageDir, "dist", "src", "index.js")
+
+  await mkdir(path.dirname(entryPath), { recursive: true })
+  await writeFile(
+    path.join(packageDir, "package.json"),
+    JSON.stringify({
+      name: "opencode-capture",
+      type: "module",
+      exports: {
+        ".": "./dist/src/index.js",
+      },
+    }, null, 2) + "\n",
+    "utf8",
+  )
+  await writeFile(
+    entryPath,
+    [
+      "export default {",
+      "  server: async () => ({})",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8",
+  )
+
+  return entryPath
+}
+
+function escapeRegex(input: string) {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 function event(type: string, properties: Record<string, unknown>) {
@@ -606,6 +641,7 @@ test("InteractionExporter marks whitespace-only assistant items as placeholders"
 
 test("install writes local plugin bridge and default settings", async () => {
   const projectDir = await mkdtemp(path.join(os.tmpdir(), "capture-install-"))
+  const entryPath = await installFakePackage(projectDir)
 
   await runInstall({
     command: "install",
@@ -617,15 +653,28 @@ test("install writes local plugin bridge and default settings", async () => {
     await readFile(path.join(projectDir, ".opencode", "capture_log", "settings.json"), "utf8"),
   ) as Record<string, unknown>
 
-  assert.match(bridge, /import plugin from "opencode-capture"/)
+  assert.match(bridge, new RegExp(escapeRegex(pathToFileURL(await realpath(entryPath)).href)))
   assert.match(bridge, /return plugin\.server\(input, options\)/)
-  assert.equal(settings.enabled_by_default, true)
+  assert.equal(settings.enabled_by_default, false)
   assert.equal(settings.capture_root, ".opencode/capture_log")
+})
+
+test("install fails when project package is missing", async () => {
+  const projectDir = await mkdtemp(path.join(os.tmpdir(), "capture-install-missing-"))
+
+  await assert.rejects(
+    runInstall({
+      command: "install",
+      projectDirectory: projectDir,
+    }),
+    /Project install requires a local package install/,
+  )
 })
 
 test("install removes existing npm plugin entry to avoid duplicate loading", async () => {
   const projectDir = await mkdtemp(path.join(os.tmpdir(), "capture-install-config-"))
   const configDir = path.join(projectDir, ".opencode")
+  await installFakePackage(projectDir)
   await mkdir(configDir, { recursive: true })
   await writeFile(
     path.join(configDir, "opencode.json"),

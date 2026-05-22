@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 
-import { readdir, readFile, writeFile, mkdir } from "node:fs/promises"
+import { access, readdir, readFile, writeFile, mkdir } from "node:fs/promises"
+import { createRequire } from "node:module"
 import path from "node:path"
 import os from "node:os"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
 import { InteractionExporter } from "./core/InteractionExporter.js"
 import { ProjectSettingsStore } from "./core/ProjectSettingsStore.js"
@@ -112,14 +114,13 @@ export async function runInstall(parsed: ParsedArgs) {
 
   const pluginDir = path.join(configDir, "plugins")
   const bridgePath = path.join(pluginDir, "opencode-capture.js")
-  const bridgeSource = [
-    'import plugin from "opencode-capture"',
-    "",
-    "export const OpencodeCapturePlugin = async (input, options) => {",
-    "  return plugin.server(input, options)",
-    "}",
-    "",
-  ].join("\n")
+  const packageEntry = isGlobal ? await resolveCurrentPackageEntry() : resolveInstalledPackageEntry(parsed.projectDirectory)
+  if (isGlobal && isLikelyEphemeralPackagePath(packageEntry)) {
+    throw new Error(
+      "Global install must run from a real global package install. Run `npm install -g opencode-capture` first, then `opencode-capture install --global`.",
+    )
+  }
+  const bridgeSource = createBridgeSource(packageEntry)
 
   await mkdir(pluginDir, { recursive: true })
   await writeFile(bridgePath, bridgeSource, "utf-8")
@@ -150,7 +151,7 @@ export async function runInstall(parsed: ParsedArgs) {
   } catch {
     await mkdir(path.join(configDir, "capture_log"), { recursive: true })
     const defaultSettings = {
-      enabled_by_default: true,
+      enabled_by_default: false,
       session_overrides: {},
       capture_root: isGlobal ? path.join(configDir, "capture_log") : ".opencode/capture_log",
       inline_output_limit: 16000,
@@ -166,10 +167,55 @@ export async function runInstall(parsed: ParsedArgs) {
   }
   console.log("\nUsage:")
   console.log("  opencode                         Start OpenCode with capture auto-loaded")
-  console.log("  opencode-capture enable         Enable capture (default on)")
+  console.log("  opencode-capture enable         Enable capture (default off)")
   console.log("  opencode-capture disable        Disable capture")
   console.log("  opencode-capture status         Show current settings")
   console.log("  opencode-capture export --session <id>   Export a session")
+}
+
+function createBridgeSource(packageEntry: string) {
+  const importSpecifier = JSON.stringify(pathToFileURL(packageEntry).href)
+  return [
+    `import plugin from ${importSpecifier}`,
+    "",
+    "export const OpencodeCapturePlugin = async (input, options) => {",
+    "  return plugin.server(input, options)",
+    "}",
+    "",
+  ].join("\n")
+}
+
+function resolveInstalledPackageEntry(projectDirectory: string) {
+  const projectRequire = createRequire(path.join(projectDirectory, "__opencode_capture__.cjs"))
+  try {
+    return projectRequire.resolve("opencode-capture")
+  } catch {
+    throw new Error(
+      "Project install requires a local package install. Run `npm install opencode-capture` first, then `npx opencode-capture install`.",
+    )
+  }
+}
+
+async function resolveCurrentPackageEntry() {
+  const candidates = [
+    new URL("./index.js", import.meta.url),
+    new URL("../dist/src/index.js", import.meta.url),
+  ]
+
+  for (const candidate of candidates) {
+    try {
+      await access(fileURLToPath(candidate))
+      return fileURLToPath(candidate)
+    } catch {
+      // Keep scanning other package entry candidates.
+    }
+  }
+
+  throw new Error("Could not resolve the installed opencode-capture package entry for bridge generation.")
+}
+
+function isLikelyEphemeralPackagePath(packageEntry: string) {
+  return /(?:^|[/\\])_npx(?:[/\\]|$)|(?:^|[/\\])dlx(?:[/\\]|$)/.test(packageEntry)
 }
 
 function parseArgs(args: string[]): ParsedArgs {

@@ -32,9 +32,11 @@ opencode-capture install --global
 说明：
 
 - `opencode-capture install` 负责把插件接入到 OpenCode，不是 npm 的安装命令
+- 必须先完成第 1 步 npm 安装，再执行 `install`；只运行 `npx opencode-capture install` 不会替你把包装进项目依赖
 - 项目内安装会写入 `.opencode/plugins/opencode-capture.js`
 - 全局安装会写入 `~/.config/opencode/plugins/opencode-capture.js`
 - `opencode-capture install` 会初始化 `.opencode/capture_log/settings.json`
+- 捕获默认关闭；执行 `opencode-capture enable` 或 `npx opencode-capture enable` 后才会默认开启
 
 ## 常用命令
 
