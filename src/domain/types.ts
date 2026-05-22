@@ -7,6 +7,9 @@ export interface CapturePluginOptions {
 }
 
 export interface ProjectSettings {
+  project_id?: string
+  project_name: string
+  project_path: string
   enabled_by_default: boolean
   session_overrides: Record<string, boolean>
   capture_root: string

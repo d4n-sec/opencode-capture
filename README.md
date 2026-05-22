@@ -6,7 +6,7 @@
 
 - 捕获用户消息、助手文本、reasoning、system prompt
 - 捕获工具调用、子 agent 调用、审批链路、命令结果
-- 按项目和 session 落盘到 `.opencode/capture_log/`
+- 按项目和 session 落盘到 `~/.local/share/opencode/capture_log/`
 - 支持将单个 session 导出为纯交互流 `interaction.json`
 
 ## 安装
@@ -35,8 +35,9 @@ opencode-capture install --global
 - 必须先完成第 1 步 npm 安装，再执行 `install`；只运行 `npx opencode-capture install` 不会替你把包装进项目依赖
 - 项目内安装会写入 `.opencode/plugins/opencode-capture.js`
 - 全局安装会写入 `~/.config/opencode/plugins/opencode-capture.js`
-- `opencode-capture install` 会初始化 `.opencode/capture_log/settings.json`
+- `opencode-capture install` 会在 `~/.local/share/opencode/capture_log/_settings/` 初始化当前项目的设置文件
 - 捕获默认关闭；执行 `opencode-capture enable` 或 `npx opencode-capture enable` 后才会默认开启
+- 会话原始数据统一写到 `~/.local/share/opencode/capture_log/`，但开关仍按项目分别存储
 
 ## 常用命令
 
@@ -61,7 +62,9 @@ npx opencode-capture export --session <session-id>
 默认捕获目录：
 
 ```text
-.opencode/capture_log/<project_key>/<session_id>/
+~/.local/share/opencode/capture_log/
+  _settings/<project_key>.json
+  <project_key>/<session_id>/
 ```
 
 典型内容：

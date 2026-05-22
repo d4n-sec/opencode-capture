@@ -11,7 +11,7 @@ import { CapturePlugin } from "../src/core/CapturePlugin.js"
 import { InteractionExporter } from "../src/core/InteractionExporter.js"
 import { ProjectSettingsStore } from "../src/core/ProjectSettingsStore.js"
 import { SessionArchive } from "../src/core/SessionArchive.js"
-import { projectStorageKey, resolveCaptureRoot } from "../src/utils/path.js"
+import { projectSettingsKey, projectStorageKey, resolveCaptureRoot } from "../src/utils/path.js"
 
 async function createHarness(options: {
   enabledByDefault?: boolean
@@ -36,12 +36,12 @@ async function createHarness(options: {
     projectDir,
     captureRoot,
     hooks,
-    archive: new SessionArchive(captureRoot, "project-1", projectStorageKey(projectDir, "project-1")),
+    archive: new SessionArchive(captureRoot, "project-1", projectStorageKey("project-1")),
     settingsStore: new ProjectSettingsStore(projectDir, {
       captureRoot,
       enabledByDefault: options.enabledByDefault,
       inlineOutputLimit: options.inlineOutputLimit,
-    }),
+    }, "project-1"),
   }
 }
 
@@ -106,36 +106,62 @@ test("Plugin definition exposes the OpenCode server entrypoint", async () => {
 
 test("ProjectSettingsStore persists default capture and session overrides", async () => {
   const projectDir = await mkdtemp(path.join(os.tmpdir(), "capture-settings-"))
-  const store = new ProjectSettingsStore(projectDir)
+  const captureRoot = path.join(projectDir, ".capture-root")
+  const store = new ProjectSettingsStore(projectDir, { captureRoot }, "project-1")
 
   const defaults = await store.load()
   assert.equal(defaults.enabled_by_default, false)
   assert.deepEqual(defaults.session_overrides, {})
+  assert.equal(defaults.project_id, "project-1")
 
   const enabled = await store.setEnabledByDefault(true)
   assert.equal(enabled.enabled_by_default, true)
   const overridden = await store.setSessionOverride("session-1", true)
   assert.equal(overridden.session_overrides["session-1"], true)
 
-  const persisted = JSON.parse(await readFile(store.getSettingsPath(), "utf8")) as {
+  const persisted = JSON.parse(await readFile(await store.getSettingsPath(), "utf8")) as {
+    project_id: string
     enabled_by_default: boolean
     session_overrides: Record<string, boolean>
   }
+  assert.equal(persisted.project_id, "project-1")
   assert.equal(persisted.enabled_by_default, true)
   assert.equal(persisted.session_overrides["session-1"], true)
 })
 
-test("Default capture root lives under .opencode/capture_log", async () => {
+test("ProjectSettingsStore promotes path-scoped settings into project-scoped settings", async () => {
+  const projectDir = await mkdtemp(path.join(os.tmpdir(), "capture-settings-promote-"))
+  const captureRoot = path.join(projectDir, ".capture-root")
+  const cliStore = new ProjectSettingsStore(projectDir, { captureRoot })
+
+  await cliStore.setEnabledByDefault(true)
+
+  const runtimeStore = new ProjectSettingsStore(projectDir, { captureRoot }, "project-1")
+  const loaded = await runtimeStore.load()
+
+  assert.equal(loaded.enabled_by_default, true)
+
+  const promoted = JSON.parse(await readFile(await runtimeStore.getSettingsPath(), "utf8")) as {
+    project_id: string
+    enabled_by_default: boolean
+  }
+  assert.equal(promoted.project_id, "project-1")
+  assert.equal(promoted.enabled_by_default, true)
+})
+
+test("Default capture root lives under ~/.local/share/opencode/capture_log", async () => {
   const projectDir = await mkdtemp(path.join(os.tmpdir(), "capture-root-"))
   assert.equal(
     resolveCaptureRoot(projectDir),
-    path.join(projectDir, ".opencode", "capture_log"),
+    path.join(os.homedir(), ".local", "share", "opencode", "capture_log"),
   )
 })
 
-test("Project storage key uses directory basename and short project id", async () => {
-  const projectDir = "/tmp/demo-project"
-  assert.equal(projectStorageKey(projectDir, "4741538ee6ac8553416394afb46c5c0309b65350"), "demo-project-474153")
+test("Project storage key uses project id only", async () => {
+  assert.equal(
+    projectStorageKey("4741538ee6ac8553416394afb46c5c0309b65350"),
+    "project-4741538ee6ac8553416394afb46c5c0309b65350",
+  )
 })
 
 test("Capture stays off by default until explicitly enabled", async () => {
@@ -642,21 +668,24 @@ test("InteractionExporter marks whitespace-only assistant items as placeholders"
 test("install writes local plugin bridge and default settings", async () => {
   const projectDir = await mkdtemp(path.join(os.tmpdir(), "capture-install-"))
   const entryPath = await installFakePackage(projectDir)
+  const captureRoot = path.join(projectDir, ".capture-root")
 
   await runInstall({
     command: "install",
     projectDirectory: projectDir,
+    captureRoot,
   })
 
   const bridge = await readFile(path.join(projectDir, ".opencode", "plugins", "opencode-capture.js"), "utf8")
+  const settingsPath = path.join(captureRoot, "_settings", `${projectSettingsKey(projectDir)}.json`)
   const settings = JSON.parse(
-    await readFile(path.join(projectDir, ".opencode", "capture_log", "settings.json"), "utf8"),
+    await readFile(settingsPath, "utf8"),
   ) as Record<string, unknown>
 
   assert.match(bridge, new RegExp(escapeRegex(pathToFileURL(await realpath(entryPath)).href)))
   assert.match(bridge, /return plugin\.server\(input, options\)/)
   assert.equal(settings.enabled_by_default, false)
-  assert.equal(settings.capture_root, ".opencode/capture_log")
+  assert.equal(settings.capture_root, captureRoot)
 })
 
 test("install fails when project package is missing", async () => {
@@ -674,6 +703,7 @@ test("install fails when project package is missing", async () => {
 test("install removes existing npm plugin entry to avoid duplicate loading", async () => {
   const projectDir = await mkdtemp(path.join(os.tmpdir(), "capture-install-config-"))
   const configDir = path.join(projectDir, ".opencode")
+  const captureRoot = path.join(projectDir, ".capture-root")
   await installFakePackage(projectDir)
   await mkdir(configDir, { recursive: true })
   await writeFile(
@@ -688,6 +718,7 @@ test("install removes existing npm plugin entry to avoid duplicate loading", asy
   await runInstall({
     command: "install",
     projectDirectory: projectDir,
+    captureRoot,
   })
 
   const config = JSON.parse(await readFile(path.join(configDir, "opencode.json"), "utf8")) as Record<string, unknown>

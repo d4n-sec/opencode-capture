@@ -114,6 +114,9 @@ export async function runInstall(parsed: ParsedArgs) {
 
   const pluginDir = path.join(configDir, "plugins")
   const bridgePath = path.join(pluginDir, "opencode-capture.js")
+  const settingsStore = new ProjectSettingsStore(parsed.projectDirectory, {
+    captureRoot: parsed.captureRoot,
+  } satisfies CapturePluginOptions)
   const packageEntry = isGlobal ? await resolveCurrentPackageEntry() : resolveInstalledPackageEntry(parsed.projectDirectory)
   if (isGlobal && isLikelyEphemeralPackagePath(packageEntry)) {
     throw new Error(
@@ -144,20 +147,11 @@ export async function runInstall(parsed: ParsedArgs) {
     }
   }
 
-  const settingsPath = path.join(configDir, "capture_log", "settings.json")
-  try {
-    await readFile(settingsPath, "utf-8")
-    console.log(`Settings already exist at ${settingsPath}`)
-  } catch {
-    await mkdir(path.join(configDir, "capture_log"), { recursive: true })
-    const defaultSettings = {
-      enabled_by_default: false,
-      session_overrides: {},
-      capture_root: isGlobal ? path.join(configDir, "capture_log") : ".opencode/capture_log",
-      inline_output_limit: 16000,
-    }
-    await writeFile(settingsPath, JSON.stringify(defaultSettings, null, 2) + "\n", "utf-8")
-    console.log(`Created default settings at ${settingsPath}`)
+  const settingsInit = await settingsStore.ensureInitialized()
+  if (settingsInit.created) {
+    console.log(`Created default settings at ${settingsInit.path}`)
+  } else {
+    console.log(`Settings already exist at ${settingsInit.path}`)
   }
 
   if (isGlobal) {

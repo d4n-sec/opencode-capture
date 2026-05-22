@@ -20,8 +20,8 @@ export class CapturePlugin {
     private readonly input: PluginInput,
     options: CapturePluginOptions = {},
   ) {
-    this.settingsStore = new ProjectSettingsStore(input.directory, options)
-    this.storageProjectKey = projectStorageKey(input.directory, input.project.id)
+    this.settingsStore = new ProjectSettingsStore(input.directory, options, input.project.id)
+    this.storageProjectKey = projectStorageKey(input.project.id)
     this.archive = new SessionArchive(this.settingsStore.getCaptureRoot(), input.project.id, this.storageProjectKey)
     this.exporter = new InteractionExporter(this.archive, options.exportFileName ?? "interaction.json")
   }
