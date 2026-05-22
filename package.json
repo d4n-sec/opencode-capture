@@ -1,0 +1,39 @@
+{
+  "name": "opencode-capture",
+  "version": "0.1.0",
+  "description": "OpenCode plugin that captures session interaction flows and exports plain conversation streams.",
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": "./dist/src/index.js",
+    "./server": "./dist/src/index.js",
+    "./cli": "./dist/src/cli.js"
+  },
+  "bin": {
+    "opencode-capture": "./dist/src/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22",
+    "opencode": "^1.15.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check:proxy": "bash scripts/check-proxy.sh",
+    "release:pack": "node scripts/prepare-release.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test test/**/*.test.ts"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.15.0",
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
