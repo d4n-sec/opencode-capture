@@ -148,7 +148,9 @@ export async function runInstall(parsed: ParsedArgs) {
   }
 
   const settingsInit = await settingsStore.ensureInitialized()
-  if (settingsInit.created) {
+  if (settingsInit.migrated) {
+    console.log(`Migrated legacy settings into ${settingsInit.path}`)
+  } else if (settingsInit.created) {
     console.log(`Created default settings at ${settingsInit.path}`)
   } else {
     console.log(`Settings already exist at ${settingsInit.path}`)

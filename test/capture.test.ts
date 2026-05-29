@@ -5,6 +5,7 @@ import path from "node:path"
 import { mkdtemp, readFile, writeFile, mkdir, realpath } from "node:fs/promises"
 import { pathToFileURL } from "node:url"
 
+import type { ProjectSettings } from "../src/domain/types.js"
 import pluginDefinition from "../src/index.js"
 import { runInstall } from "../src/cli.js"
 import { CapturePlugin } from "../src/core/CapturePlugin.js"
@@ -36,7 +37,7 @@ async function createHarness(options: {
     projectDir,
     captureRoot,
     hooks,
-    archive: new SessionArchive(captureRoot, "project-1", projectStorageKey("project-1")),
+    archive: new SessionArchive(captureRoot, "project-1", projectStorageKey(projectDir)),
     settingsStore: new ProjectSettingsStore(projectDir, {
       captureRoot,
       enabledByDefault: options.enabledByDefault,
@@ -129,8 +130,8 @@ test("ProjectSettingsStore persists default capture and session overrides", asyn
   assert.equal(persisted.session_overrides["session-1"], true)
 })
 
-test("ProjectSettingsStore promotes path-scoped settings into project-scoped settings", async () => {
-  const projectDir = await mkdtemp(path.join(os.tmpdir(), "capture-settings-promote-"))
+test("ProjectSettingsStore uses the same settings path for CLI and runtime access", async () => {
+  const projectDir = await mkdtemp(path.join(os.tmpdir(), "capture-settings-consistent-"))
   const captureRoot = path.join(projectDir, ".capture-root")
   const cliStore = new ProjectSettingsStore(projectDir, { captureRoot })
 
@@ -140,13 +141,13 @@ test("ProjectSettingsStore promotes path-scoped settings into project-scoped set
   const loaded = await runtimeStore.load()
 
   assert.equal(loaded.enabled_by_default, true)
+  assert.equal(loaded.project_id, "project-1")
+  assert.equal(await cliStore.getSettingsPath(), await runtimeStore.getSettingsPath())
 
-  const promoted = JSON.parse(await readFile(await runtimeStore.getSettingsPath(), "utf8")) as {
-    project_id: string
+  const persisted = JSON.parse(await readFile(await runtimeStore.getSettingsPath(), "utf8")) as {
     enabled_by_default: boolean
   }
-  assert.equal(promoted.project_id, "project-1")
-  assert.equal(promoted.enabled_by_default, true)
+  assert.equal(persisted.enabled_by_default, true)
 })
 
 test("Default capture root lives under ~/.local/share/opencode/capture_log", async () => {
@@ -157,11 +158,65 @@ test("Default capture root lives under ~/.local/share/opencode/capture_log", asy
   )
 })
 
-test("Project storage key uses project id only", async () => {
-  assert.equal(
-    projectStorageKey("4741538ee6ac8553416394afb46c5c0309b65350"),
-    "project-4741538ee6ac8553416394afb46c5c0309b65350",
+test("Project storage key is derived from project directory", async () => {
+  assert.notEqual(projectStorageKey("/tmp/project-a"), projectStorageKey("/tmp/project-b"))
+  assert.equal(projectStorageKey("/tmp/project-a"), projectStorageKey("/tmp/project-a"))
+})
+
+test("Shared runtime project ids do not merge settings across directories", async () => {
+  const captureRoot = await mkdtemp(path.join(os.tmpdir(), "capture-shared-id-"))
+  const projectADir = path.join(captureRoot, "project-a")
+  const projectBDir = path.join(captureRoot, "project-b")
+  await mkdir(projectADir, { recursive: true })
+  await mkdir(projectBDir, { recursive: true })
+
+  const cliStoreA = new ProjectSettingsStore(projectADir, { captureRoot })
+  await cliStoreA.setEnabledByDefault(true)
+
+  const runtimeStoreA = new ProjectSettingsStore(projectADir, { captureRoot }, "project-global")
+  const runtimeStoreB = new ProjectSettingsStore(projectBDir, { captureRoot }, "project-global")
+  const settingsA = await runtimeStoreA.load()
+  const settingsB = await runtimeStoreB.load()
+
+  assert.equal(settingsA.enabled_by_default, true)
+  assert.equal(settingsB.enabled_by_default, false)
+  assert.notEqual(await runtimeStoreA.getSettingsPath(), await runtimeStoreB.getSettingsPath())
+})
+
+test("ProjectSettingsStore migrates legacy project-local settings into the user capture root", async () => {
+  const projectDir = await mkdtemp(path.join(os.tmpdir(), "capture-legacy-upgrade-"))
+  const captureRoot = path.join(projectDir, ".capture-root")
+  const legacyDir = path.join(projectDir, ".opencode", "capture_log")
+  await mkdir(legacyDir, { recursive: true })
+  await writeFile(
+    path.join(legacyDir, "settings.json"),
+    JSON.stringify({
+      project_id: "legacy-project",
+      project_name: path.basename(projectDir),
+      project_path: projectDir,
+      enabled_by_default: true,
+      session_overrides: {
+        "session-1": true,
+      },
+      capture_root: path.join(projectDir, ".opencode", "capture_log"),
+      inline_output_limit: 4096,
+      settings_file_name: "settings.json",
+      export_file_name: "interaction.json",
+    }, null, 2) + "\n",
+    "utf8",
   )
+
+  const store = new ProjectSettingsStore(projectDir, { captureRoot }, "project-global")
+  const settings = await store.load()
+
+  assert.equal(settings.enabled_by_default, true)
+  assert.equal(settings.session_overrides["session-1"], true)
+  assert.equal(settings.capture_root, captureRoot)
+
+  const persisted = JSON.parse(await readFile(await store.getSettingsPath(), "utf8")) as ProjectSettings
+  assert.equal(persisted.enabled_by_default, true)
+  assert.equal(persisted.session_overrides["session-1"], true)
+  assert.equal(persisted.capture_root, captureRoot)
 })
 
 test("Capture stays off by default until explicitly enabled", async () => {
@@ -571,6 +626,92 @@ test("Child sessions inherit capture and do not mix files with the parent", asyn
     childEvents.map((item) => item.kind),
     ["session.lifecycle", "chat.user"],
   )
+})
+
+test("Disabled sibling project does not create session meta or events", async () => {
+  const captureRoot = await mkdtemp(path.join(os.tmpdir(), "capture-isolation-"))
+  const projectADir = path.join(captureRoot, "project-a")
+  const projectBDir = path.join(captureRoot, "project-b")
+  await mkdir(projectADir, { recursive: true })
+  await mkdir(projectBDir, { recursive: true })
+
+  const pluginA = new CapturePlugin(
+    {
+      directory: projectADir,
+      project: { id: "project-global" },
+    } as never,
+    { captureRoot },
+  )
+  const pluginB = new CapturePlugin(
+    {
+      directory: projectBDir,
+      project: { id: "project-global" },
+    } as never,
+    { captureRoot },
+  )
+  const hooksA = pluginA.createHooks() as Record<string, any>
+  const hooksB = pluginB.createHooks() as Record<string, any>
+  const storeA = new ProjectSettingsStore(projectADir, { captureRoot }, "project-global")
+  const archiveA = new SessionArchive(captureRoot, "project-global", projectStorageKey(projectADir))
+  const archiveB = new SessionArchive(captureRoot, "project-global", projectStorageKey(projectBDir))
+
+  await storeA.setEnabledByDefault(true)
+
+  await hooksA.event(
+    event("session.created", {
+      info: {
+        id: "session-a",
+        title: "Project A",
+        directory: projectADir,
+        path: projectADir,
+      },
+    }),
+  )
+  await hooksB.event(
+    event("session.created", {
+      info: {
+        id: "session-b",
+        title: "Project B",
+        directory: projectBDir,
+        path: projectBDir,
+      },
+    }),
+  )
+  await hooksA["chat.message"](
+    {
+      sessionID: "session-a",
+      messageID: "msg-a",
+      agent: "build",
+      model: { providerID: "demo", modelID: "kimi" },
+    },
+    {
+      message: { role: "user" },
+      parts: [{ type: "text", text: "hello from a" }],
+    },
+  )
+  await hooksB["chat.message"](
+    {
+      sessionID: "session-b",
+      messageID: "msg-b",
+      agent: "build",
+      model: { providerID: "demo", modelID: "kimi" },
+    },
+    {
+      message: { role: "user" },
+      parts: [{ type: "text", text: "hello from b" }],
+    },
+  )
+
+  const metaA = await archiveA.readMetaIfExists("session-a")
+  const metaB = await archiveB.readMetaIfExists("session-b")
+  const eventsA = await archiveA.readEvents("session-a")
+  const eventsB = await archiveB.readEvents("session-b")
+
+  assert.ok(metaA)
+  assert.equal(metaA?.directory, projectADir)
+  assert.equal(metaB, undefined)
+  assert.deepEqual(eventsA.map((item) => item.kind), ["session.lifecycle", "chat.user"])
+  assert.equal(eventsB.length, 0)
 })
 
 test("InteractionExporter emits ordered plain interaction items", async () => {

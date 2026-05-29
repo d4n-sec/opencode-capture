@@ -21,7 +21,7 @@ export class CapturePlugin {
     options: CapturePluginOptions = {},
   ) {
     this.settingsStore = new ProjectSettingsStore(input.directory, options, input.project.id)
-    this.storageProjectKey = projectStorageKey(input.project.id)
+    this.storageProjectKey = projectStorageKey(input.directory)
     this.archive = new SessionArchive(this.settingsStore.getCaptureRoot(), input.project.id, this.storageProjectKey)
     this.exporter = new InteractionExporter(this.archive, options.exportFileName ?? "interaction.json")
   }
@@ -274,13 +274,17 @@ export class CapturePlugin {
       const info = this.extractSessionInfo(event)
       const infoID = this.stringValue(info?.id)
       if (infoID) {
-        await this.archive.updateMeta(infoID, {
-          title: this.stringValue(info?.title),
-          directory: this.stringValue(info?.directory),
-          path: this.stringValue(info?.path),
-          parent_session_id: this.stringValue(info?.parentID),
-          updated_at: new Date().toISOString(),
-        })
+        const parentSessionID = this.stringValue(info?.parentID)
+        const shouldCapture = await this.shouldCaptureSession(infoID, parentSessionID)
+        if (shouldCapture) {
+          await this.archive.updateMeta(infoID, {
+            title: this.stringValue(info?.title),
+            directory: this.stringValue(info?.directory),
+            path: this.stringValue(info?.path),
+            parent_session_id: parentSessionID,
+            updated_at: new Date().toISOString(),
+          })
+        }
       }
       if (eventType === "session.created" && infoID && (await this.shouldCapture(infoID))) {
         await this.archive.appendEvent(infoID, {
@@ -431,11 +435,23 @@ export class CapturePlugin {
 
   private async shouldCapture(sessionID: string) {
     const settings = await this.settingsStore.load()
+    const enabled = await this.isCaptureEnabled(sessionID, settings)
+    if (!enabled) return false
     await this.ensureSessionRoot(sessionID, settings)
-    return this.isCaptureEnabled(sessionID, settings)
+    return true
   }
 
-  private async isCaptureEnabled(sessionID: string, settings: ProjectSettings, visited = new Set<string>()): Promise<boolean> {
+  private async shouldCaptureSession(sessionID: string, parentSessionID?: string) {
+    const settings = await this.settingsStore.load()
+    return this.isCaptureEnabled(sessionID, settings, new Set<string>(), parentSessionID)
+  }
+
+  private async isCaptureEnabled(
+    sessionID: string,
+    settings: ProjectSettings,
+    visited = new Set<string>(),
+    parentSessionID?: string,
+  ): Promise<boolean> {
     if (visited.has(sessionID)) return false
     visited.add(sessionID)
 
@@ -443,9 +459,10 @@ export class CapturePlugin {
     if (override !== undefined) return override
     if (settings.enabled_by_default) return true
 
-    const meta = await this.archive.readMeta(sessionID)
-    if (!meta.parent_session_id) return false
-    return this.isCaptureEnabled(meta.parent_session_id, settings, visited)
+    const meta = await this.archive.readMetaIfExists(sessionID)
+    const resolvedParentSessionID = parentSessionID ?? meta?.parent_session_id
+    if (!resolvedParentSessionID) return false
+    return this.isCaptureEnabled(resolvedParentSessionID, settings, visited)
   }
 
   private async ensureSessionRoot(sessionID: string, settings: ProjectSettings) {

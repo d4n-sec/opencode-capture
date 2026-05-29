@@ -14,7 +14,7 @@ export class ProjectSettingsStore {
   private readonly projectID?: string
   private readonly settingsDirectory: string
   private readonly projectName: string
-  private readonly pathScopedSettingsKey: string
+  private readonly settingsKey: string
 
   constructor(
     projectDirectory: string,
@@ -30,19 +30,15 @@ export class ProjectSettingsStore {
     this.enabledByDefault = options.enabledByDefault ?? false
     this.settingsDirectory = path.join(this.captureRoot, "_settings")
     this.projectName = path.basename(this.projectDirectory) || "project"
-    this.pathScopedSettingsKey = projectSettingsKey(this.projectDirectory)
+    this.settingsKey = projectSettingsKey(this.projectDirectory)
   }
 
   async getSettingsPath() {
-    return this.buildSettingsPath(await this.resolveSettingsKey())
+    return this.buildSettingsPath(this.settingsKey)
   }
 
   getCaptureRoot() {
     return this.captureRoot
-  }
-
-  private getProjectMapPath() {
-    return path.join(this.settingsDirectory, "project-map.json")
   }
 
   private buildSettingsPath(settingsKey: string) {
@@ -61,45 +57,8 @@ export class ProjectSettingsStore {
     }
   }
 
-  private async readProjectMap(): Promise<Record<string, string>> {
-    return (await this.readOptionalJson<Record<string, string>>(this.getProjectMapPath())) ?? {}
-  }
-
-  private async writeProjectMap(map: Record<string, string>) {
-    await mkdir(this.settingsDirectory, { recursive: true })
-    await writeFile(this.getProjectMapPath(), JSON.stringify(map, null, 2) + "\n", "utf8")
-  }
-
-  private async resolveSettingsKey() {
-    if (this.projectID) {
-      return projectSettingsKey(this.projectDirectory, this.projectID)
-    }
-
-    const projectMap = await this.readProjectMap()
-    const mappedProjectID = projectMap[this.projectDirectory]
-    if (mappedProjectID) {
-      return projectSettingsKey(this.projectDirectory, mappedProjectID)
-    }
-
-    return this.pathScopedSettingsKey
-  }
-
-  private async getPrimarySettingsPath() {
-    return this.buildSettingsPath(await this.resolveSettingsKey())
-  }
-
-  private getFallbackSettingsPath() {
-    return this.buildSettingsPath(this.pathScopedSettingsKey)
-  }
-
-  private async syncProjectMapping() {
-    if (!this.projectID) return
-
-    const projectMap = await this.readProjectMap()
-    if (projectMap[this.projectDirectory] === this.projectID) return
-
-    projectMap[this.projectDirectory] = this.projectID
-    await this.writeProjectMap(projectMap)
+  private getLegacySettingsPath() {
+    return path.join(this.projectDirectory, ".opencode", "capture_log", this.settingsFileName)
   }
 
   private getDefaultSettings(): ProjectSettings {
@@ -116,17 +75,8 @@ export class ProjectSettingsStore {
     }
   }
 
-  async load(): Promise<ProjectSettings> {
-    await this.syncProjectMapping()
+  private buildResolvedSettings(parsed?: Partial<ProjectSettings>) {
     const defaults = this.getDefaultSettings()
-    const primaryPath = await this.getPrimarySettingsPath()
-    const fallbackPath = this.getFallbackSettingsPath()
-    const parsed =
-      (await this.readOptionalJson<Partial<ProjectSettings>>(primaryPath)) ??
-      (primaryPath === fallbackPath
-        ? undefined
-        : await this.readOptionalJson<Partial<ProjectSettings>>(fallbackPath))
-
     const next = {
       ...defaults,
       ...parsed,
@@ -139,11 +89,60 @@ export class ProjectSettingsStore {
       export_file_name: parsed?.export_file_name ?? defaults.export_file_name,
     }
 
-    if (this.projectID && primaryPath !== fallbackPath && parsed && !(await this.readOptionalJson(primaryPath))) {
-      await this.writeSettings(primaryPath, next)
-    }
-
     return next
+  }
+
+  private hasSessionOverrides(settings?: Partial<ProjectSettings>) {
+    return Object.keys(settings?.session_overrides ?? {}).length > 0
+  }
+
+  private hasLegacySignal(settings?: Partial<ProjectSettings>) {
+    if (!settings) return false
+    return (
+      (settings.enabled_by_default !== undefined && settings.enabled_by_default !== this.enabledByDefault) ||
+      this.hasSessionOverrides(settings) ||
+      (settings.inline_output_limit !== undefined && settings.inline_output_limit !== this.inlineOutputLimit) ||
+      (settings.export_file_name !== undefined && settings.export_file_name !== this.exportFileName)
+    )
+  }
+
+  private isBootstrapDefault(settings?: Partial<ProjectSettings>) {
+    if (!settings) return false
+    return (
+      (settings.enabled_by_default ?? this.enabledByDefault) === this.enabledByDefault &&
+      !this.hasSessionOverrides(settings) &&
+      (settings.inline_output_limit ?? this.inlineOutputLimit) === this.inlineOutputLimit &&
+      (settings.export_file_name ?? this.exportFileName) === this.exportFileName &&
+      (settings.project_path ?? this.projectDirectory) === this.projectDirectory
+    )
+  }
+
+  private async resolveSettings() {
+    const settingsPath = await this.getSettingsPath()
+    const current = await this.readOptionalJson<Partial<ProjectSettings>>(settingsPath)
+    const legacy = await this.readOptionalJson<Partial<ProjectSettings>>(this.getLegacySettingsPath())
+    const shouldApplyLegacy = this.hasLegacySignal(legacy) && (!current || this.isBootstrapDefault(current))
+    const parsed = shouldApplyLegacy
+      ? {
+        ...current,
+        ...legacy,
+      }
+      : current
+
+    return {
+      path: settingsPath,
+      settings: this.buildResolvedSettings(parsed),
+      existed: current !== undefined,
+      migrated: shouldApplyLegacy,
+    }
+  }
+
+  async load(): Promise<ProjectSettings> {
+    const resolved = await this.resolveSettings()
+    if (resolved.migrated) {
+      await this.writeSettings(resolved.path, resolved.settings)
+    }
+    return resolved.settings
   }
 
   private async writeSettings(filePath: string, settings: ProjectSettings) {
@@ -152,28 +151,19 @@ export class ProjectSettingsStore {
   }
 
   async ensureInitialized() {
-    const settingsPath = await this.getPrimarySettingsPath()
-    const existing = await this.readOptionalJson<ProjectSettings>(settingsPath)
-    if (existing) {
-      return {
-        settings: await this.load(),
-        created: false,
-        path: settingsPath,
-      }
+    const resolved = await this.resolveSettings()
+    if (!resolved.existed || resolved.migrated) {
+      await this.writeSettings(resolved.path, resolved.settings)
     }
-
-    const settings = this.getDefaultSettings()
-    await this.writeSettings(settingsPath, settings)
-    await this.syncProjectMapping()
     return {
-      settings,
-      created: true,
-      path: settingsPath,
+      settings: resolved.settings,
+      created: !resolved.existed,
+      migrated: resolved.migrated,
+      path: resolved.path,
     }
   }
 
   async save(input: Partial<ProjectSettings>): Promise<ProjectSettings> {
-    await this.syncProjectMapping()
     const current = await this.load()
     const next: ProjectSettings = {
       ...current,
@@ -185,7 +175,7 @@ export class ProjectSettingsStore {
       capture_root: this.captureRoot,
       settings_file_name: this.settingsFileName,
     }
-    await this.writeSettings(await this.getPrimarySettingsPath(), next)
+    await this.writeSettings(await this.getSettingsPath(), next)
     return next
   }
 

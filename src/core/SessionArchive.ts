@@ -79,6 +79,23 @@ export class SessionArchive {
     return (await this.getSessionState(sessionID)).meta
   }
 
+  async readMetaIfExists(sessionID: string): Promise<SessionMeta | undefined> {
+    const cached = this.sessions.get(sessionID)
+    if (cached) {
+      return cached.meta
+    }
+
+    try {
+      const content = await readFile(this.metaPath(sessionID), "utf8")
+      return JSON.parse(content) as SessionMeta
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return undefined
+      }
+      throw error
+    }
+  }
+
   async listMetas(): Promise<SessionMeta[]> {
     const projectDir = path.join(this.captureRoot, this.projectKey)
     try {

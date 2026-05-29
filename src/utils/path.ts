@@ -9,20 +9,12 @@ export function resolveCaptureRoot(projectDirectory: string, explicitRoot?: stri
   return path.join(os.homedir(), ".local", "share", "opencode", "capture_log")
 }
 
-export function projectStorageKey(projectID: string) {
-  return `project-${sanitizePathSegment(projectID)}`
+export function projectStorageKey(projectDirectory: string) {
+  return `project-${stableProjectDirectoryKey(projectDirectory)}`
 }
 
-export function projectSettingsKey(projectDirectory: string, projectID?: string) {
-  if (projectID && projectID.trim().length > 0) {
-    return `project-${sanitizePathSegment(projectID)}`
-  }
-
-  const normalizedDirectory = path.resolve(projectDirectory)
-  const baseName = path.basename(normalizedDirectory) || "project"
-  const safeBaseName = sanitizePathSegment(baseName)
-  const hash = createHash("sha1").update(normalizedDirectory).digest("hex").slice(0, 12)
-  return `path-${safeBaseName}-${hash}`
+export function projectSettingsKey(projectDirectory: string) {
+  return `project-${stableProjectDirectoryKey(projectDirectory)}`
 }
 
 export function sessionDirectory(captureRoot: string, projectKey: string, sessionID: string) {
@@ -31,4 +23,12 @@ export function sessionDirectory(captureRoot: string, projectKey: string, sessio
 
 function sanitizePathSegment(value: string) {
   return value.replace(/[^a-zA-Z0-9._-]+/g, "-")
+}
+
+function stableProjectDirectoryKey(projectDirectory: string) {
+  const normalizedDirectory = path.resolve(projectDirectory)
+  const baseName = path.basename(normalizedDirectory) || "project"
+  const safeBaseName = sanitizePathSegment(baseName)
+  const hash = createHash("sha1").update(normalizedDirectory).digest("hex").slice(0, 12)
+  return `${safeBaseName}-${hash}`
 }
